@@ -1,0 +1,4 @@
+# 运行时生成的文件
+*.log
+config.ini
+Thumbs.db
