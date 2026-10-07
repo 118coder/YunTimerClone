@@ -1,0 +1,164 @@
+<ui:FluentWindow x:Class="YunTimerClone.MainWindow"
+                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                 Title="定时关机助手"
+                 Width="430" Height="660"
+                 MinWidth="430" MaxWidth="430" MinHeight="660" MaxHeight="660"
+                 ExtendsContentIntoTitleBar="True"
+                 WindowBackdropType="Mica"
+                 ResizeMode="NoResize"
+                 WindowStartupLocation="CenterScreen">
+
+    <Window.Resources>
+        <SolidColorBrush x:Key="TimerAccentBrush" Color="#60CDFF"/>
+        <SolidColorBrush x:Key="TimerCardBrush" Color="#12FFFFFF"/>
+        <SolidColorBrush x:Key="TimerCardBorderBrush" Color="#1FFFFFFF"/>
+        <SolidColorBrush x:Key="TimerSegBrush" Color="#0FFFFFFF"/>
+        <SolidColorBrush x:Key="TimerDestructiveBrush" Color="#DC2626"/>
+
+        <!-- Fluent 分段选择器（借鉴 WPF-UI / Fluent Design 的 Segmented 风格） -->
+        <Style x:Key="SegmentedRadio" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="#B3FFFFFF"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="Bd" Background="Transparent" CornerRadius="4" Padding="0,9">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource TimerAccentBrush}"/>
+                                <Setter Property="Foreground" Value="#1B1B1B"/>
+                                <Setter Property="FontWeight" Value="SemiBold"/>
+                            </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsChecked" Value="False"/>
+                                    <Condition Property="IsMouseOver" Value="True"/>
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="Bd" Property="Background" Value="#0FFFFFFF"/>
+                            </MultiTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Background="{DynamicResource ApplicationBackgroundBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Grid.Row="0" x:Name="TitleBar" Title="定时关机助手"/>
+
+        <StackPanel Grid.Row="1" Margin="28,6,28,20">
+
+            <!-- 大时钟 + 日期 -->
+            <TextBlock x:Name="ClockText" Text="00:00:00"
+                       FontFamily="Segoe UI Variable Display, Segoe UI"
+                       FontSize="52" FontWeight="SemiBold"
+                       HorizontalAlignment="Center"/>
+            <TextBlock x:Name="DateText" Text=""
+                       FontSize="13"
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                       HorizontalAlignment="Center" Margin="0,2,0,18"/>
+
+            <!-- 模式分段选择器 -->
+            <Border Background="{StaticResource TimerSegBrush}" CornerRadius="6" Padding="3" Margin="0,0,0,14">
+                <UniformGrid Columns="2">
+                    <RadioButton x:Name="RbFixed" GroupName="Mode" Content="固定时间定时" Style="{StaticResource SegmentedRadio}"/>
+                    <RadioButton x:Name="RbCount" GroupName="Mode" Content="倒计时定时" Style="{StaticResource SegmentedRadio}"/>
+                </UniformGrid>
+            </Border>
+
+            <!-- 参数卡片 -->
+            <Border Background="{StaticResource TimerCardBrush}"
+                    BorderBrush="{StaticResource TimerCardBorderBrush}" BorderThickness="1"
+                    CornerRadius="8" Padding="18" Margin="0,0,0,14">
+                <StackPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="44"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="96"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="小时" Style="{StaticResource FieldLabel}"/>
+                        <Slider Grid.Column="1" x:Name="TrkHour" Minimum="0" Maximum="23"
+                                IsSnapToTickEnabled="True" TickFrequency="1" IsMoveToPointEnabled="True"
+                                VerticalAlignment="Center" Margin="4,0,10,0"/>
+                        <ui:NumberBox Grid.Column="2" x:Name="NumHour" Minimum="0" Maximum="23" Value="23"
+                                      ClearButtonEnabled="False" TextAlignment="Center" Height="34"/>
+                    </Grid>
+                    <Grid Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="44"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="96"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="分钟" Style="{StaticResource FieldLabel}"/>
+                        <Slider Grid.Column="1" x:Name="TrkMin" Minimum="0" Maximum="59"
+                                IsSnapToTickEnabled="True" TickFrequency="1" IsMoveToPointEnabled="True"
+                                VerticalAlignment="Center" Margin="4,0,10,0"/>
+                        <ui:NumberBox Grid.Column="2" x:Name="NumMin" Minimum="0" Maximum="59" Value="30"
+                                      ClearButtonEnabled="False" TextAlignment="Center" Height="34"/>
+                    </Grid>
+                    <Grid Margin="0,14,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="44"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="执行" Style="{StaticResource FieldLabel}"/>
+                        <ComboBox Grid.Column="1" x:Name="CmbAction" Height="34" VerticalContentAlignment="Center"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- 主按钮 -->
+            <ui:Button x:Name="BtnOK" Content="确  定" Appearance="Primary"
+                       Height="44" FontSize="15" FontWeight="SemiBold"
+                       HorizontalAlignment="Stretch" Cursor="Hand"
+                       Click="OnOK" Margin="0,0,0,10"/>
+            <ui:Button x:Name="BtnStop" Content="取消定时" Appearance="Secondary"
+                       Height="38" HorizontalAlignment="Stretch" Cursor="Hand"
+                       IsEnabled="False" Click="OnStop" Margin="0,0,0,18"/>
+
+            <!-- 状态 -->
+            <TextBlock x:Name="StatusText" Text="未设置定时任务" FontSize="13"
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                       HorizontalAlignment="Center"/>
+            <TextBlock x:Name="RemainText" Text="" FontSize="15" FontWeight="SemiBold"
+                       Foreground="{StaticResource TimerAccentBrush}"
+                       HorizontalAlignment="Center" Margin="0,4,0,18"/>
+
+            <!-- 底部：自启动 + 立即执行 -->
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <ui:ToggleSwitch Grid.Column="0" x:Name="ChkAuto" Content="开机自启动"/>
+                <ui:Button Grid.Column="2" x:Name="BtnRunNow" Content="立即执行" Appearance="Danger"
+                           Height="34" Cursor="Hand" Click="OnRunNow"/>
+            </Grid>
+
+            <TextBlock HorizontalAlignment="Right" Margin="0,12,0,0" FontSize="12">
+                <Hyperlink x:Name="LinkHome" Foreground="{DynamicResource TextFillColorSecondaryBrush}" TextDecorations="{x:Null}">
+                    项目主页 v2.0.1.9
+                </Hyperlink>
+            </TextBlock>
+
+        </StackPanel>
+    </Grid>
+</ui:FluentWindow>

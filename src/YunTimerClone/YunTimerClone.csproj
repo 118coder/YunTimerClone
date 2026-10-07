@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>YunTimerClone</AssemblyName>
+    <RootNamespace>YunTimerClone</RootNamespace>
+    <Version>2.0.1.9</Version>
+    <AssemblyTitle>定时关机助手</AssemblyTitle>
+    <Product>定时关机助手（YunTimer 复刻版）</Product>
+    <Description>定时关机助手（YunTimer 复刻版）— WPF Fluent UI</Description>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WPF-UI" Version="4.3.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\YunTimerClone.Core\YunTimerClone.Core.csproj" />
+  </ItemGroup>
+
+</Project>
