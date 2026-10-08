@@ -2,8 +2,8 @@
 1 ICON "app.ico"
 
 1 VERSIONINFO
-FILEVERSION 2,0,1,9
-PRODUCTVERSION 2,0,1,9
+FILEVERSION 0,1,0,0
+PRODUCTVERSION 0,1,0,0
 FILEOS 0x40004
 FILETYPE 0x1
 BEGIN
@@ -13,8 +13,8 @@ BEGIN
     BEGIN
       VALUE "FileDescription", "定时关机助手（YunTimer 复刻版）"
       VALUE "ProductName", "定时关机助手"
-      VALUE "FileVersion", "2.0.1.9"
-      VALUE "ProductVersion", "2.0.1.9"
+      VALUE "FileVersion", "0.1"
+      VALUE "ProductVersion", "0.1"
       VALUE "OriginalFilename", "定时关机助手.exe"
       VALUE "LegalCopyright", "MIT License, Copyright (c) 2026 118coder"
     END

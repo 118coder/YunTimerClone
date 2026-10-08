@@ -74,3 +74,5 @@
 ## 📄 License
 
 [MIT](LICENSE)
+
+> 🤖 AI/开发者接手请先阅读 [HANDOFF.md](HANDOFF.md)（项目现状、构建测试、已知坑与设计决策）。

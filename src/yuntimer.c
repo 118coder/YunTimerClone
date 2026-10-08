@@ -723,7 +723,7 @@ static void paint_main(HDC dc)
     draw_text_r(dc, L"立即执行", &runt, g_fBtnSmall, COL_TXT, DT_CENTER);
 
     RECT lk = RC_LINK;
-    draw_text_r(dc, L"项目主页 v2.0.1.9", &lk, g_fSmall, g_hover == R_LINK ? COL_ACCENT : COL_TXT3, DT_RIGHT);
+    draw_text_r(dc, L"项目主页 v0.1", &lk, g_fSmall, g_hover == R_LINK ? COL_ACCENT : COL_TXT3, DT_RIGHT);
 }
 
 static void invalidate_ui(void)
