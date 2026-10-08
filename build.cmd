@@ -15,14 +15,15 @@ if not exist "%WPFDIR%\PresentationFramework.dll" (
   set NETDIR=%WINDIR%\Microsoft.NET\Framework\v4.0.30319
 )
 set REFS=/r:"%WPFDIR%\PresentationFramework.dll" /r:"%WPFDIR%\PresentationCore.dll" /r:"%WPFDIR%\WindowsBase.dll" /r:"%NETDIR%\System.Xaml.dll" /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll
+set OPTS=/nologo /warn:0 /optimize+ /platform:anycpu /codepage:65001
 if not exist dist mkdir dist
 
 rem GUI 主程序（winexe：双击运行，不显示控制台）
-"%CSC%" /nologo /warn:0 /target:winexe /platform:anycpu /codepage:65001 %REFS% /out:dist\定时关机助手.exe src\YunTimerClone.cs
+"%CSC%" %OPTS% /target:winexe %REFS% /out:dist\定时关机助手.exe src\YunTimerClone.cs
 if errorlevel 1 goto :fail
 
-rem 自检运行器（console：用于 --selftest / --uitest，日常使用不需要）
-"%CSC%" /nologo /warn:0 /target:exe /platform:anycpu /codepage:65001 %REFS% /out:dist\selftest.exe src\YunTimerClone.cs
+rem 自检运行器（console：用于 --selftest / --uitest / --perftest，日常使用不需要）
+"%CSC%" %OPTS% /target:exe %REFS% /out:dist\selftest.exe src\YunTimerClone.cs
 if errorlevel 1 goto :fail
 
 echo.
