@@ -1,34 +1,27 @@
 @echo off
-rem 定时关机助手（YunTimer 复刻版 · 零依赖 Fluent UI）构建脚本
-rem 使用系统自带的 .NET Framework 4.x csc.exe，无需安装任何第三方依赖
+rem 定时关机助手（YunTimer 复刻版 · 原生 C 版）构建脚本
+rem 使用 mingw-w64 gcc 编译原生 Win32 程序，零依赖、双击秒开
 setlocal
-set CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe
-if not exist "%CSC%" set CSC=%WINDIR%\Microsoft.NET\Framework\v4.0.30319\csc.exe
-if not exist "%CSC%" (
-  echo 未找到 .NET Framework 4.x csc.exe
+set GCC=C:\mingw64\mingw64\bin\gcc.exe
+if not exist "%GCC%" set GCC=C:\mingw64\bin\gcc.exe
+if not exist "%GCC%" for /f "delims=" %%i in ('where gcc 2^>nul') do set GCC=%%i
+if not exist "%GCC%" (
+  echo 未找到 gcc，请安装 mingw-w64
   exit /b 1
 )
-set WPFDIR=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\WPF
-set NETDIR=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319
-if not exist "%WPFDIR%\PresentationFramework.dll" (
-  set WPFDIR=%WINDIR%\Microsoft.NET\Framework\v4.0.30319\WPF
-  set NETDIR=%WINDIR%\Microsoft.NET\Framework\v4.0.30319
-)
-set REFS=/r:"%WPFDIR%\PresentationFramework.dll" /r:"%WPFDIR%\PresentationCore.dll" /r:"%WPFDIR%\WindowsBase.dll" /r:"%NETDIR%\System.Xaml.dll" /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll
-set OPTS=/nologo /warn:0 /optimize+ /platform:anycpu /codepage:65001
 if not exist dist mkdir dist
 
-rem GUI 主程序（winexe：双击运行，不显示控制台）
-"%CSC%" %OPTS% /target:winexe %REFS% /out:dist\定时关机助手.exe src\YunTimerClone.cs
+rem GUI 主程序（原生 Win32，无控制台窗口）
+"%GCC%" -O2 -s -municode -mwindows -o dist\定时关机助手.exe src\yuntimer.c -lgdi32 -lshell32 -ladvapi32 -ldwmapi -luser32
 if errorlevel 1 goto :fail
 
-rem 自检运行器（console：用于 --selftest / --uitest / --perftest，日常使用不需要）
-"%CSC%" %OPTS% /target:exe %REFS% /out:dist\selftest.exe src\YunTimerClone.cs
+rem 自检运行器（console：--selftest / --uitest）
+"%GCC%" -O2 -s -DTEST_BUILD -o dist\selftest.exe src\yuntimer.c -lgdi32 -lshell32 -ladvapi32 -ldwmapi -luser32
 if errorlevel 1 goto :fail
 
 echo.
 echo 构建完成：
-echo   dist\定时关机助手.exe   主程序（零依赖，Windows 10/11 自带 .NET Framework 4.8）
+echo   dist\定时关机助手.exe   主程序（原生 C，零依赖，双击秒开）
 echo   dist\selftest.exe       逻辑/UI 自检运行器
 exit /b 0
 
