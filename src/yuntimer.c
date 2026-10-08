@@ -2,11 +2,14 @@
  * 复刻自 www.yunguanji.com 的 YunTimer v2.0.1.9「定时关机助手」，原创实现。
  *
  * 与原版相同的技术形态：纯 Win32 API + GDI 自绘界面，无运行时、无 JIT，
- * 双击即开（数十毫秒级）。单文件源码，gcc(mingw-w64) 编译，约 50KB。
+ * 双击即开（数十毫秒级）。单文件源码，gcc(mingw-w64) 编译，约 45KB。
+ * 界面结构对齐原版：紧凑时间头 + 指定时间/倒计时页签 + "HH : MM" 时间盒（真 EDIT 控件，
+ * 支持输入/光标/选中）+ 单滑块控制焦点段 + 执行按钮。
  *
  * 构建（见 build.cmd）：
- *   GUI 主程序  : gcc -O2 -municode -mwindows -o dist\定时关机助手.exe src\yuntimer.c -lgdi32 -lshell32 -ladvapi32 -ldwmapi -luser32
- *   自检运行器  : gcc -O2 -DTEST_BUILD -o dist\selftest.exe src\yuntimer.c
+ *   windres src\app.rc -O coff -o src\app_res.o
+ *   GUI 主程序  : gcc -O2 -municode -mwindows -o dist\定时关机助手.exe src\yuntimer.c src\app_res.o -lgdi32 -lshell32 -ladvapi32 -ldwmapi -luser32
+ *   自检运行器  : gcc -O2 -DTEST_BUILD -o dist\selftest.exe src\yuntimer.c src\app_res.o -lgdi32 -lshell32 -ladvapi32 -ldwmapi -luser32
  *
  * 运行模式：
  *   定时关机助手.exe            正常模式（定时到达后真实执行）
@@ -48,6 +51,8 @@
 #define RUN_VALUE   L"定时关机助手"
 #define CLASS_MAIN  L"YunTimerMainWnd"
 #define CLASS_DLG   L"YunTimerConfirmWnd"
+#define IDC_EDIT_H  101
+#define IDC_EDIT_M  102
 
 /* ---------- 配色（Fluent 深色） ---------- */
 #define COL_BG        RGB(0x1B,0x1B,0x1F)
@@ -63,14 +68,15 @@
 #define COL_TXT3      RGB(0x8B,0x8B,0x92)
 #define COL_DARKTXT   RGB(0x1B,0x1B,0x1F)
 #define COL_SEGTXT    RGB(0xB3,0xB3,0xB8)
-#define COL_POPUP     RGB(0x26,0x26,0x2B)
+#define COL_EDIT_BG   RGB(0x21,0x21,0x26)
+#define COL_EDIT_FOC  RGB(0x1E,0x3A,0x52)
 
 /* ---------- 前向声明 ---------- */
 typedef struct AppConfig_t {
     int action;
     int warnSeconds;
     int forceWait;
-    int mode;          /* 0=固定时间 1=倒计时 */
+    int mode;          /* 0=指定时间 1=倒计时 */
     int hour;
     int minute;
 } AppConfig_t;
@@ -78,8 +84,6 @@ typedef struct AppConfig_t {
 static BOOL  autostart_is_set(void);
 static void  config_path(wchar_t* out, size_t cch);
 static void  config_save(const AppConfig_t* c, const wchar_t* path);
-static HICON make_tray_icon(void);
-static void  tray_balloon(const wchar_t* title, const wchar_t* text);
 
 /* ---------- 核心逻辑 ---------- */
 enum PowerAction { PA_SHUTDOWN = 0, PA_REBOOT = 1, PA_LOGOFF = 2, PA_HIBERNATE = 3, PA_LOCK = 4 };
@@ -242,7 +246,7 @@ static int st_cmp(const SYSTEMTIME* a, const SYSTEMTIME* b)
 
 /* ---------- 定时任务 ---------- */
 typedef struct {
-    int isCountdown;   /* 0=固定时间 1=倒计时 */
+    int isCountdown;   /* 0=指定时间 1=倒计时 */
     int hour, minute;
     int action;
 } Task;
@@ -504,21 +508,21 @@ static int run_selftest(void)
 
 /* ---------- UI ---------- */
 enum {
-    R_NONE = 0, R_SEG_FIXED, R_SEG_COUNT, R_SLIDER_H, R_SLIDER_M,
-    R_BOX_H, R_BOX_M, R_CHIP0, R_BTN_OK, R_BTN_STOP, R_BTN_RUN,
-    R_TOGGLE, R_LINK
+    R_NONE = 0, R_SEG_FIXED, R_SEG_COUNT, R_SLIDER, R_TIMEBOX,
+    R_CHIP0, R_BTN_OK, R_BTN_STOP, R_BTN_RUN, R_TOGGLE, R_LINK
 };
 #define R_CHIP_LAST (R_CHIP0 + 4)
 
-static HWND g_wnd;
+static HWND g_wnd, g_editH, g_editM;
 static HINSTANCE g_inst;
-static HFONT g_fClock, g_fLabel, g_fBtn, g_fBtnSmall, g_fSmall, g_fSec, g_fWarn;
+static HFONT g_fHeader, g_fLabel, g_fBtn, g_fBtnSmall, g_fSmall, g_fSec, g_fWarn, g_fTime;
+static HBRUSH g_brEditIdle, g_brEditFocus;
 static AppConfig_t g_cfg;
 static Engine g_eng;
 static int g_hour = 23, g_minute = 30;
 static int g_mode = 0;
-static wchar_t g_hourText[8] = L"23", g_minText[8] = L"30";
-static int g_caretBox = 0;
+static int g_focusSeg = 1;          /* 1=小时段 2=分钟段（滑块与高亮跟随） */
+static int g_updating = 0;
 static int g_hover = R_NONE, g_dragSlider = 0;
 static NOTIFYICONDATAW g_nid;
 static BOOL g_created = FALSE;
@@ -526,21 +530,19 @@ static BOOL g_forceExit = FALSE;
 static BOOL g_autoStart = FALSE;
 static int g_dlgAction = PA_SHUTDOWN, g_dlgRemain = 60, g_dlgTotal = 60;
 static int g_dlgDecision = 2;
-static HBITMAP g_trayBmp = NULL;
 static int g_uiTestMode = 0;
+static HBITMAP g_trayBmp_unused = NULL;
 
-/* 布局（客户区 430x600） */
-static const RECT RC_SEG    = {56, 118, 374, 156};
-static const RECT RC_CARD   = {16, 164, 414, 316};
-static const RECT RC_TRACKH = {88, 190, 320, 190};
-static const RECT RC_TRACKM = {88, 238, 320, 238};
-static const RECT RC_BOXH   = {330, 176, 390, 206};
-static const RECT RC_BOXM   = {330, 224, 390, 254};
-static const RECT RC_BTNOK  = {16, 330, 414, 374};
-static const RECT RC_BTNSTP = {16, 384, 414, 422};
-static const RECT RC_TOGGLE = {16, 494, 58, 516};
-static const RECT RC_BTNRUN = {296, 490, 414, 522};
-static const RECT RC_LINK   = {16, 534, 414, 556};
+/* 布局（客户区 430x560） */
+static const RECT RC_SEG     = {56, 56, 374, 94};
+static const RECT RC_CARD    = {16, 106, 414, 254};
+static const RECT RC_TIMEBOX = {52, 124, 378, 186};
+static const RECT RC_TRACK   = {44, 222, 386, 222};
+static const RECT RC_BTNOK   = {16, 312, 414, 356};
+static const RECT RC_BTNSTP  = {16, 366, 414, 404};
+static const RECT RC_TOGGLE  = {16, 474, 58, 496};
+static const RECT RC_BTNRUN  = {296, 470, 414, 502};
+static const RECT RC_LINK    = {16, 512, 414, 532};
 
 static RECT mkrect(int l, int t, int r, int b)
 {
@@ -553,20 +555,20 @@ static BOOL pt_in(const RECT* r, int x, int y)
     return x >= r->left && x < r->right && y >= r->top && y < r->bottom;
 }
 
+static int hour_max(void) { return g_mode == 0 ? 23 : 99; }
+
 static int hit_test(int x, int y)
 {
     if (pt_in(&RC_SEG, x, y)) return x < (RC_SEG.left + RC_SEG.right) / 2 ? R_SEG_FIXED : R_SEG_COUNT;
     if (pt_in(&RC_CARD, x, y)) {
-        if (y >= RC_TRACKH.top - 12 && y <= RC_TRACKH.top + 12 && x >= RC_TRACKH.left - 4 && x <= RC_TRACKH.right + 4) return R_SLIDER_H;
-        if (pt_in(&RC_BOXH, x, y)) return R_BOX_H;
-        if (y >= RC_TRACKM.top - 12 && y <= RC_TRACKM.top + 12 && x >= RC_TRACKM.left - 4 && x <= RC_TRACKM.right + 4) return R_SLIDER_M;
-        if (pt_in(&RC_BOXM, x, y)) return R_BOX_M;
-        if (y >= 264 && y < 296 && x >= 84 && x < 400) {
-            int idx = (x - 84) / 64;
-            if (idx > 4) idx = 4;
-            return R_CHIP0 + idx;
-        }
+        if (pt_in(&RC_TIMEBOX, x, y)) return R_TIMEBOX;
+        if (y >= RC_TRACK.top - 12 && y <= RC_TRACK.top + 12 && x >= RC_TRACK.left - 4 && x <= RC_TRACK.right + 4) return R_SLIDER;
         return R_NONE;
+    }
+    if (y >= 264 && y < 296 && x >= 84 && x < 400) {
+        int idx = (x - 84) / 64;
+        if (idx > 4) idx = 4;
+        return R_CHIP0 + idx;
     }
     if (pt_in(&RC_BTNOK, x, y)) return R_BTN_OK;
     if (pt_in(&RC_BTNSTP, x, y)) return R_BTN_STOP;
@@ -611,17 +613,17 @@ static void fill_circle(HDC dc, int cx, int cy, int rad, COLORREF col)
     DeleteObject(b);
 }
 
-static void draw_slider(HDC dc, const RECT* track, int value, int vmax, int hover)
+static void draw_slider(HDC dc, int value, int vmax, int hover)
 {
     double frac = vmax > 0 ? (double)value / vmax : 0.0;
-    double w = (track->right - track->left) - 14;
+    double w = (RC_TRACK.right - RC_TRACK.left) - 14;
     if (w < 0) w = 0;
-    RECT t = mkrect(track->left, track->top - 2, track->right, track->top + 2);
+    RECT t = mkrect(RC_TRACK.left, RC_TRACK.top - 2, RC_TRACK.right, RC_TRACK.top + 2);
     draw_round(dc, &t, 2, COL_TRACK, 0);
-    RECT f = mkrect(track->left, track->top - 2, track->left + (int)(7 + frac * w), track->top + 2);
+    RECT f = mkrect(RC_TRACK.left, RC_TRACK.top - 2, RC_TRACK.left + (int)(7 + frac * w), RC_TRACK.top + 2);
     draw_round(dc, &f, 2, COL_ACCENT, 0);
-    int cx = track->left + (int)(7 + frac * w);
-    fill_circle(dc, cx, track->top, 7, hover ? RGB(0xE8,0xF6,0xFF) : RGB(0xFF,0xFF,0xFF));
+    int cx = RC_TRACK.left + (int)(7 + frac * w);
+    fill_circle(dc, cx, RC_TRACK.top, 7, hover ? RGB(0xE8,0xF6,0xFF) : RGB(0xFF,0xFF,0xFF));
 }
 
 static void draw_toggle(HDC dc)
@@ -634,17 +636,18 @@ static void draw_toggle(HDC dc)
 
 static void paint_main(HDC dc)
 {
+    wchar_t buf[128];
+    /* 紧凑时间头：日期居左，当前时间居右（对齐原版） */
     SYSTEMTIME st;
     GetLocalTime(&st);
-    const wchar_t* weeks[7] = { L"星期日", L"星期一", L"星期二", L"星期三", L"星期四", L"星期五", L"星期六" };
-    wchar_t buf[128];
-    swprintf(buf, 127, L"%02d:%02d:%02d", st.wHour, st.wMinute, st.wSecond);
-    RECT rc = mkrect(0, 16, 430, 84);
-    draw_text_r(dc, buf, &rc, g_fClock, COL_TXT, DT_CENTER);
-    swprintf(buf, 127, L"%d年%d月%d日 %s", st.wYear, st.wMonth, st.wDay, weeks[st.wDayOfWeek]);
-    RECT rd = mkrect(0, 88, 430, 110);
-    draw_text_r(dc, buf, &rd, g_fLabel, COL_TXT2, DT_CENTER);
+    RECT hd = mkrect(24, 20, 220, 44);
+    swprintf(buf, 127, L"%d年%d月%d日", st.wYear, st.wMonth, st.wDay);
+    draw_text_r(dc, buf, &hd, g_fHeader, COL_TXT2, DT_LEFT);
+    RECT ht = mkrect(210, 20, 406, 44);
+    swprintf(buf, 127, L"%02d时%02d分%02d秒", st.wHour, st.wMinute, st.wSecond);
+    draw_text_r(dc, buf, &ht, g_fHeader, COL_TXT2, DT_RIGHT);
 
+    /* 页签：指定时间 / 倒计时 */
     RECT seg = RC_SEG;
     draw_round(dc, &seg, 6, COL_SEG, 0);
     RECT l = mkrect(RC_SEG.left + 3, RC_SEG.top + 3, (RC_SEG.left + RC_SEG.right) / 2 - 1, RC_SEG.bottom - 3);
@@ -653,26 +656,25 @@ static void paint_main(HDC dc)
     draw_round(dc, &r, 4, g_mode == 1 ? COL_ACCENT : (g_hover == R_SEG_COUNT ? COL_HOVER : COL_SEG), 0);
     RECT lt = l, rt = r;
     lt.bottom -= 3; rt.bottom -= 3;
-    draw_text_r(dc, L"固定时间定时", &lt, g_fLabel, g_mode == 0 ? COL_DARKTXT : COL_SEGTXT, DT_CENTER);
-    draw_text_r(dc, L"倒计时定时", &rt, g_fLabel, g_mode == 1 ? COL_DARKTXT : COL_SEGTXT, DT_CENTER);
+    draw_text_r(dc, L"指定时间", &lt, g_fLabel, g_mode == 0 ? COL_DARKTXT : COL_SEGTXT, DT_CENTER);
+    draw_text_r(dc, L"倒计时", &rt, g_fLabel, g_mode == 1 ? COL_DARKTXT : COL_SEGTXT, DT_CENTER);
 
+    /* 卡片：时间盒 + 单滑块 */
     RECT card = RC_CARD;
     draw_round(dc, &card, 8, COL_CARD, COL_CARD_LINE);
-    RECT lb = mkrect(34, 178, 80, 200);
-    draw_text_r(dc, L"小时", &lb, g_fLabel, COL_TXT2, DT_LEFT);
-    lb = mkrect(34, 226, 80, 248);
-    draw_text_r(dc, L"分钟", &lb, g_fLabel, COL_TXT2, DT_LEFT);
-    draw_slider(dc, &RC_TRACKH, g_hour, g_mode == 0 ? 23 : 99, g_hover == R_SLIDER_H || g_dragSlider == 1);
-    draw_slider(dc, &RC_TRACKM, g_minute, 59, g_hover == R_SLIDER_M || g_dragSlider == 2);
-    RECT bh = RC_BOXH;
-    draw_round(dc, &bh, 5, COL_SEG, g_caretBox == 1 ? COL_ACCENT : COL_CARD_LINE);
-    RECT bht = bh; bht.bottom -= 2;
-    draw_text_r(dc, g_hourText, &bht, g_fBtn, COL_TXT, DT_CENTER);
-    RECT bm = RC_BOXM;
-    draw_round(dc, &bm, 5, COL_SEG, g_caretBox == 2 ? COL_ACCENT : COL_CARD_LINE);
-    RECT bmt = bm; bmt.bottom -= 2;
-    draw_text_r(dc, g_minText, &bmt, g_fBtn, COL_TXT, DT_CENTER);
-    RECT la = mkrect(34, 270, 80, 292);
+    RECT box = RC_TIMEBOX;
+    draw_round(dc, &box, 8, COL_EDIT_BG, (GetFocus() == g_editH || GetFocus() == g_editM) ? COL_ACCENT : COL_CARD_LINE);
+    /* 冒号分隔（两 EDIT 控件之间，由父窗体绘制） */
+    RECT colon = mkrect(188, RC_TIMEBOX.top, 242, RC_TIMEBOX.bottom);
+    draw_text_r(dc, L":", &colon, g_fTime, COL_TXT2, DT_CENTER);
+
+    /* 单滑块控制焦点段 */
+    int val = g_focusSeg == 1 ? g_hour : g_minute;
+    int vmax = g_focusSeg == 1 ? hour_max() : 59;
+    draw_slider(dc, val, vmax, g_hover == R_SLIDER || g_dragSlider);
+
+    /* 动作芯片 */
+    RECT la = mkrect(16, 268, 60, 290);
     draw_text_r(dc, L"执行", &la, g_fLabel, COL_TXT2, DT_LEFT);
     {
         static const wchar_t* names[5] = { L"关机", L"重启", L"注销", L"休眠", L"锁定" };
@@ -685,32 +687,34 @@ static void paint_main(HDC dc)
         }
     }
 
+    /* 执行 / 取消定时 */
     RECT ok = RC_BTNOK;
     draw_round(dc, &ok, 5, COL_ACCENT, 0);
     RECT okt = ok; okt.bottom -= 2;
-    draw_text_r(dc, L"确  定", &okt, g_fBtn, COL_DARKTXT, DT_CENTER);
+    draw_text_r(dc, L"执  行", &okt, g_fBtn, COL_DARKTXT, DT_CENTER);
     RECT stp = RC_BTNSTP;
     draw_round(dc, &stp, 5, g_eng.armed ? COL_HOVER : COL_CARD, g_eng.armed ? 0 : COL_CARD_LINE);
     RECT stpt = stp; stpt.bottom -= 2;
     draw_text_r(dc, L"取消定时", &stpt, g_fBtnSmall, g_eng.armed ? COL_TXT : COL_TXT3, DT_CENTER);
 
+    /* 状态 */
     if (g_eng.armed) {
         swprintf(buf, 127, L"将于 %d点%d分%d秒%s", g_eng.fireAt.wHour, g_eng.fireAt.wMinute, g_eng.fireAt.wSecond, action_name(g_eng.task.action));
-        RECT s1 = mkrect(0, 434, 430, 456);
+        RECT s1 = mkrect(0, 414, 430, 436);
         draw_text_r(dc, buf, &s1, g_fLabel, COL_TXT2, DT_CENTER);
         SYSTEMTIME now;
         GetLocalTime(&now);
         long rem = engine_remaining_seconds(&g_eng, &now);
         swprintf(buf, 127, L"剩余 %02d:%02d:%02d", (int)(rem / 3600), (int)((rem / 60) % 60), (int)(rem % 60));
-        RECT s2 = mkrect(0, 458, 430, 482);
+        RECT s2 = mkrect(0, 438, 430, 462);
         draw_text_r(dc, buf, &s2, g_fBtn, COL_ACCENT, DT_CENTER);
     } else {
-        RECT s1 = mkrect(0, 434, 430, 456);
+        RECT s1 = mkrect(0, 414, 430, 436);
         draw_text_r(dc, L"未设置定时任务", &s1, g_fLabel, COL_TXT2, DT_CENTER);
     }
 
     draw_toggle(dc);
-    RECT tl = mkrect(66, 494, 180, 516);
+    RECT tl = mkrect(66, 474, 180, 496);
     draw_text_r(dc, L"开机自启动", &tl, g_fLabel, COL_TXT2, DT_LEFT);
 
     RECT run = RC_BTNRUN;
@@ -727,58 +731,7 @@ static void invalidate_ui(void)
     if (g_wnd) InvalidateRect(g_wnd, NULL, FALSE);
 }
 
-/* ---------- 托盘 ---------- */
-static HICON make_tray_icon(void)
-{
-    if (g_trayBmp) { DeleteObject(g_trayBmp); g_trayBmp = NULL; }
-    HDC sdc = GetDC(NULL);
-    HDC dc = CreateCompatibleDC(sdc);
-    BITMAPV5HEADER bi;
-    ZeroMemory(&bi, sizeof(bi));
-    bi.bV5Size = sizeof(bi);
-    bi.bV5Width = 32; bi.bV5Height = -32; bi.bV5Planes = 1; bi.bV5BitCount = 32;
-    bi.bV5Compression = BI_BITFIELDS;
-    bi.bV5RedMask = 0x00FF0000; bi.bV5GreenMask = 0x0000FF00; bi.bV5BlueMask = 0x000000FF; bi.bV5AlphaMask = 0xFF000000;
-    void* bits = NULL;
-    HBITMAP bmp = CreateDIBSection(dc, (BITMAPINFO*)&bi, DIB_RGB_COLORS, &bits, NULL, 0);
-    HBITMAP ob = (HBITMAP)SelectObject(dc, bmp);
-    {
-        HBRUSH bg = CreateSolidBrush(COL_BG);
-        RECT r32 = mkrect(0, 0, 32, 32);
-        FillRect(dc, &r32, bg);
-        DeleteObject(bg);
-        HPEN ring = CreatePen(PS_SOLID, 2, COL_ACCENT);
-        HPEN op = (HPEN)SelectObject(dc, ring);
-        HBRUSH on = (HBRUSH)SelectObject(dc, GetStockObject(NULL_BRUSH));
-        Ellipse(dc, 5, 5, 28, 28);
-        SelectObject(dc, op); SelectObject(dc, on);
-        DeleteObject(ring);
-        HPEN hand = CreatePen(PS_SOLID, 2, RGB(0xFF,0xFF,0xFF));
-        op = (HPEN)SelectObject(dc, hand);
-        on = (HBRUSH)SelectObject(dc, GetStockObject(NULL_BRUSH));
-        MoveToEx(dc, 16, 16, NULL); LineTo(dc, 16, 8);
-        MoveToEx(dc, 16, 16, NULL); LineTo(dc, 22, 16);
-        SelectObject(dc, op); SelectObject(dc, on);
-        DeleteObject(hand);
-        {
-            BYTE* p = (BYTE*)bits;
-            int i;
-            for (i = 0; i < 32 * 32; i++) p[i * 4 + 3] = 0xFF;
-        }
-    }
-    SelectObject(dc, ob);
-    DeleteDC(dc);
-    ReleaseDC(NULL, sdc);
-    HBITMAP mask = CreateBitmap(32, 32, 1, 1, NULL);
-    ICONINFO ii;
-    ii.fIcon = TRUE; ii.xHotspot = 0; ii.yHotspot = 0;
-    ii.hbmMask = mask; ii.hbmColor = bmp;
-    HICON icon = CreateIconIndirect(&ii);
-    DeleteObject(mask);
-    g_trayBmp = bmp;
-    return icon;
-}
-
+/* ---------- 托盘（图标来自 exe 内嵌资源） ---------- */
 static void tray_add(void)
 {
     ZeroMemory(&g_nid, sizeof(g_nid));
@@ -787,7 +740,8 @@ static void tray_add(void)
     g_nid.uID = 1;
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAY;
-    g_nid.hIcon = make_tray_icon();
+    g_nid.hIcon = (HICON)LoadImageW(g_inst, MAKEINTRESOURCEW(1), IMAGE_ICON, 32, 32, LR_DEFAULTCOLOR);
+    if (!g_nid.hIcon) g_nid.hIcon = LoadIconW(NULL, IDI_APPLICATION);
     wcscpy(g_nid.szTip, L"定时关机助手");
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 }
@@ -815,25 +769,30 @@ static void do_execute(HWND owner, int action, const wchar_t* reason)
     if (err) MessageBoxW(owner, err, L"关机失败", MB_OK | MB_ICONERROR);
 }
 
-static void sync_text_from_slider(int which)
+static void set_edit_value(int which, int v)
 {
-    if (which == 1) swprintf(g_hourText, 7, L"%d", g_hour);
-    else swprintf(g_minText, 7, L"%d", g_minute);
+    g_updating = 1;
+    wchar_t buf[8];
+    swprintf(buf, 7, L"%02d", v);
+    SetWindowTextW(which == 1 ? g_editH : g_editM, buf);
+    g_updating = 0;
 }
 
-static void update_slider_from_text(int which)
+static void normalize_segment(int which)
 {
-    int v = _wtoi(which == 1 ? g_hourText : g_minText);
-    int vmax = which == 1 ? (g_mode == 0 ? 23 : 99) : 59;
+    int v = which == 1 ? g_hour : g_minute;
+    int vmax = which == 1 ? hour_max() : 59;
     if (v < 0) v = 0;
     if (v > vmax) v = vmax;
     if (which == 1) g_hour = v; else g_minute = v;
+    set_edit_value(which, v);
 }
 
 static void set_mode(int mode)
 {
     g_mode = mode;
-    if (mode == 0 && g_hour > 23) { g_hour = 23; sync_text_from_slider(1); }
+    if (g_hour > hour_max()) g_hour = hour_max();
+    set_edit_value(1, g_hour);
     invalidate_ui();
 }
 
@@ -863,15 +822,13 @@ static void arm_task(HWND w)
 
 static void on_ok(HWND w)
 {
-    int hour = _wtoi(g_hourText);
-    int minute = _wtoi(g_minText);
     int vr;
     if (g_mode == 0) {
         SYSTEMTIME now;
         GetLocalTime(&now);
-        vr = validate_fixed(hour, minute, &now);
+        vr = validate_fixed(g_hour, g_minute, &now);
     } else {
-        vr = validate_count(hour, minute);
+        vr = validate_count(g_hour, g_minute);
     }
     if (vr == VR_BAD) {
         MessageBoxW(w, L"亲，这个是火星文嘛？看不懂啊", L"提示", MB_OK | MB_ICONWARNING);
@@ -886,9 +843,6 @@ static void on_ok(HWND w)
         MessageBoxW(w, buf, L"提示", MB_OK | MB_ICONWARNING);
         return;
     }
-    g_hour = hour; g_minute = minute;
-    sync_text_from_slider(1);
-    sync_text_from_slider(2);
     arm_task(w);
     invalidate_ui();
 }
@@ -959,7 +913,6 @@ static LRESULT CALLBACK dlg_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 double a = 2 * 3.14159265358979 * frac;
                 double sx = cx + r * sin(a), sy = cy - r * cos(a);
                 SelectObject(mem, arcp);
-                /* GDI Arc 逆时针绘制：自“当前点”画回“顶部”= 顺时针的已完成段 */
                 Arc(mem, cx - r, cy - r, cx + r, cy + r, (int)floor(sx + 0.5), (int)floor(sy + 0.5), cx, cy - r);
             }
             SelectObject(mem, obn);
@@ -1091,24 +1044,97 @@ static void apply_dark_chrome(HWND w)
     set(w, DWMWA_BORDER_COLOR, &chrome, sizeof(chrome));
 }
 
+static void slider_set_from_x(int x)
+{
+    double w = (RC_TRACK.right - RC_TRACK.left) - 14;
+    if (w < 1) w = 1;
+    double frac = (x - RC_TRACK.left - 7) / w;
+    if (frac < 0) frac = 0;
+    if (frac > 1) frac = 1;
+    int vmax = g_focusSeg == 1 ? hour_max() : 59;
+    int v = (int)(vmax * frac + 0.5);
+    if (g_focusSeg == 1) {
+        if (v != g_hour) { g_hour = v; set_edit_value(1, g_hour); invalidate_ui(); }
+    } else {
+        if (v != g_minute) { g_minute = v; set_edit_value(2, g_minute); invalidate_ui(); }
+    }
+}
+
 static LRESULT CALLBACK main_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
 {
     switch (m) {
         case WM_CREATE: {
             g_created = TRUE;
             apply_dark_chrome(w);
-            g_fClock    = CreateFontW(-52, 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
-            g_fLabel    = CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
-            g_fBtn      = CreateFontW(-15, 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
-            g_fBtnSmall = CreateFontW(-13, 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
-            g_fSmall    = CreateFontW(-12, 0, 0, 0, 400, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
-            g_fSec      = CreateFontW(-26, 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
-            g_fWarn     = CreateFontW(-17, 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+            g_fHeader    = CreateFontW(-15, 0, 0, 0, 400, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+            g_fLabel     = CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+            g_fBtn       = CreateFontW(-15, 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+            g_fBtnSmall  = CreateFontW(-13, 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+            g_fSmall     = CreateFontW(-12, 0, 0, 0, 400, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+            g_fSec       = CreateFontW(-26, 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+            g_fWarn      = CreateFontW(-17, 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+            g_fTime      = CreateFontW(-28, 0, 0, 0, 600, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Consolas");
+            g_brEditIdle  = CreateSolidBrush(COL_EDIT_BG);
+            g_brEditFocus = CreateSolidBrush(COL_EDIT_FOC);
+
+            /* 时间段输入：真 EDIT 控件（光标/选中/方向键/数字键盘全套原生行为） */
+            g_editH = CreateWindowExW(0, L"EDIT", L"",
+                WS_CHILD | WS_VISIBLE | ES_CENTER | ES_NUMBER,
+                74, 132, 114, 46, w, (HMENU)IDC_EDIT_H, g_inst, NULL);
+            g_editM = CreateWindowExW(0, L"EDIT", L"",
+                WS_CHILD | WS_VISIBLE | ES_CENTER | ES_NUMBER,
+                242, 132, 114, 46, w, (HMENU)IDC_EDIT_M, g_inst, NULL);
+            SendMessageW(g_editH, WM_SETFONT, (WPARAM)g_fTime, TRUE);
+            SendMessageW(g_editM, WM_SETFONT, (WPARAM)g_fTime, TRUE);
+            SendMessageW(g_editH, EM_SETLIMITTEXT, 2, 0);
+            SendMessageW(g_editM, EM_SETLIMITTEXT, 2, 0);
+            set_edit_value(1, g_hour);
+            set_edit_value(2, g_minute);
+
             SetTimer(w, 1, 500, NULL);
             SetTimer(w, 2, 1000, NULL);
             g_autoStart = autostart_is_set();
             if (!g_uiTestMode) tray_add();
             invalidate_ui();
+            return 0;
+        }
+        case WM_CTLCOLOREDIT: {
+            HDC hdcE = (HDC)wp;
+            HWND ctl = (HWND)lp;
+            if (ctl == g_editH || ctl == g_editM) {
+                int which = ctl == g_editH ? 1 : 2;
+                SetTextColor(hdcE, COL_TXT);
+                SetBkColor(hdcE, g_focusSeg == which ? COL_EDIT_FOC : COL_EDIT_BG);
+                return (LRESULT)(g_focusSeg == which ? g_brEditFocus : g_brEditIdle);
+            }
+            break;
+        }
+        case WM_COMMAND: {
+            HWND ctl = (HWND)lp;
+            if (ctl == g_editH || ctl == g_editM) {
+                int which = ctl == g_editH ? 1 : 2;
+                WORD code = HIWORD(wp);
+                if (code == EN_SETFOCUS) {
+                    g_focusSeg = which;
+                    invalidate_ui();
+                } else if (code == EN_KILLFOCUS) {
+                    normalize_segment(which);   /* 失焦校验+补零（对齐原版 09 : 26 样式） */
+                    invalidate_ui();
+                } else if (code == EN_CHANGE && !g_updating) {
+                    wchar_t txt[8];
+                    GetWindowTextW(ctl, txt, 8);
+                    int v = _wtoi(txt);
+                    if (which == 1) g_hour = v; else g_minute = v;
+                    invalidate_ui();
+                }
+                return 0;
+            }
+            break;
+        }
+        case WM_ACTIVATE: {
+            if (LOWORD(wp) != WA_INACTIVE && g_editH) {
+                SetFocus(g_focusSeg == 1 ? g_editH : g_editM);
+            }
             return 0;
         }
         case WM_TIMER: {
@@ -1151,23 +1177,8 @@ static LRESULT CALLBACK main_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         }
         case WM_MOUSEMOVE: {
             POINT p; GetCursorPos(&p); ScreenToClient(w, &p);
-            if (g_dragSlider == 1) {
-                double w2 = (RC_TRACKH.right - RC_TRACKH.left) - 14;
-                if (w2 < 1) w2 = 1;
-                double frac = (p.x - RC_TRACKH.left - 7) / w2;
-                if (frac < 0) frac = 0;
-                if (frac > 1) frac = 1;
-                int vmax = g_mode == 0 ? 23 : 99;
-                int v = (int)(vmax * frac + 0.5);
-                if (v != g_hour) { g_hour = v; sync_text_from_slider(1); invalidate_ui(); }
-            } else if (g_dragSlider == 2) {
-                double w2 = (RC_TRACKM.right - RC_TRACKM.left) - 14;
-                if (w2 < 1) w2 = 1;
-                double frac = (p.x - RC_TRACKM.left - 7) / w2;
-                if (frac < 0) frac = 0;
-                if (frac > 1) frac = 1;
-                int v = (int)(59 * frac + 0.5);
-                if (v != g_minute) { g_minute = v; sync_text_from_slider(2); invalidate_ui(); }
+            if (g_dragSlider) {
+                slider_set_from_x(p.x);
             }
             {
                 int h = hit_test(p.x, p.y);
@@ -1182,12 +1193,13 @@ static LRESULT CALLBACK main_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         case WM_LBUTTONDOWN: {
             POINT p; GetCursorPos(&p); ScreenToClient(w, &p);
             int h = hit_test(p.x, p.y);
-            if (h == R_SLIDER_H) { g_dragSlider = 1; SetCapture(w); }
-            else if (h == R_SLIDER_M) { g_dragSlider = 2; SetCapture(w); }
-            else if (h == R_BOX_H) { g_caretBox = 1; invalidate_ui(); }
-            else if (h == R_BOX_M) { g_caretBox = 2; invalidate_ui(); }
-            else if (h == R_SEG_FIXED) { g_caretBox = 0; set_mode(0); }
-            else if (h == R_SEG_COUNT) { g_caretBox = 0; set_mode(1); }
+            if (h == R_SLIDER) { g_dragSlider = 1; SetCapture(w); slider_set_from_x(p.x); }
+            else if (h == R_TIMEBOX) {
+                /* 点击时间盒空白处：聚焦更近的时间段 */
+                SetFocus(p.x < (RC_TIMEBOX.left + RC_TIMEBOX.right) / 2 ? g_editH : g_editM);
+            }
+            else if (h == R_SEG_FIXED) set_mode(0);
+            else if (h == R_SEG_COUNT) set_mode(1);
             else if (h >= R_CHIP0 && h <= R_CHIP_LAST) {
                 if (g_cfg.action != h - R_CHIP0) { g_cfg.action = h - R_CHIP0; invalidate_ui(); }
             }
@@ -1201,13 +1213,13 @@ static LRESULT CALLBACK main_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 }
                 invalidate_ui();
             }
-            else if (h == R_BTN_OK) { g_caretBox = 0; on_ok(w); }
+            else if (h == R_BTN_OK) on_ok(w);
             else if (h == R_BTN_STOP) {
                 engine_disarm(&g_eng);
                 tray_balloon(APP_TITLE, L"已取消定时任务。");
                 invalidate_ui();
             }
-            else if (h == R_BTN_RUN) { g_caretBox = 0; on_run_now(w); }
+            else if (h == R_BTN_RUN) on_run_now(w);
             else if (h == R_LINK) {
                 ShellExecuteW(w, L"open", REPO_URL, NULL, NULL, SW_SHOWNORMAL);
             }
@@ -1215,23 +1227,6 @@ static LRESULT CALLBACK main_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         }
         case WM_LBUTTONUP: {
             if (g_dragSlider) { g_dragSlider = 0; ReleaseCapture(); invalidate_ui(); }
-            return 0;
-        }
-        case WM_CHAR: {
-            if (!g_caretBox) return 0;
-            wchar_t* txt = g_caretBox == 1 ? g_hourText : g_minText;
-            if (wp == L'\b') {
-                size_t len = wcslen(txt);
-                if (len > 0) txt[len - 1] = 0;
-                update_slider_from_text(g_caretBox);
-            } else if (wp >= L'0' && wp <= L'9') {
-                size_t len = wcslen(txt);
-                if (len < 2) { txt[len] = (wchar_t)wp; txt[len + 1] = 0; }
-                update_slider_from_text(g_caretBox);
-            } else if (wp == L'\r' || wp == 27) {
-                g_caretBox = 0;
-            }
-            invalidate_ui();
             return 0;
         }
         case WM_TRAY: {
@@ -1291,7 +1286,7 @@ static void register_classes(void)
     wc.lpfnWndProc = main_proc;
     wc.hInstance = g_inst;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hIcon = make_tray_icon();
+    wc.hIcon = LoadIconW(g_inst, MAKEINTRESOURCEW(1));   /* exe 内嵌图标 */
     wc.lpszClassName = CLASS_MAIN;
     RegisterClassW(&wc);
 
@@ -1300,6 +1295,7 @@ static void register_classes(void)
     wd.lpfnWndProc = dlg_proc;
     wd.hInstance = g_inst;
     wd.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wd.hIcon = LoadIconW(g_inst, MAKEINTRESOURCEW(1));
     wd.lpszClassName = CLASS_DLG;
     RegisterClassW(&wd);
 }
@@ -1312,10 +1308,20 @@ static int run_uitest(void)
     int failed = 0;
     g_uiTestMode = 1;
     register_classes();
-    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
     HWND w = CreateWindowExW(0, CLASS_MAIN, APP_TITLE, style,
-        0, 0, 446, 639, NULL, NULL, g_inst, NULL);
+        0, 0, 446, 599, NULL, NULL, g_inst, NULL);
     check("main.createHidden", w != NULL && g_created);
+    /* 时间段 EDIT 控件存在且输入联动生效 */
+    HWND eh = GetDlgItem(w, IDC_EDIT_H);
+    HWND em = GetDlgItem(w, IDC_EDIT_M);
+    check("ui.edits", eh != NULL && em != NULL);
+    SendMessageW(eh, WM_SETTEXT, 0, (LPARAM)L"17");
+    check("ui.editToValue", g_hour == 17);
+    g_updating = 1;
+    SendMessageW(em, WM_SETTEXT, 0, (LPARAM)L"59");
+    g_updating = 0;
+    check("ui.editGuard", g_minute == 30);   /* 守卫期内不联动（模拟程序内部写回） */
     /* 引擎触发路径（模拟模式写日志） */
     wchar_t tmpLog[MAX_PATH];
     GetTempPathW(MAX_PATH, tmpLog);
@@ -1324,7 +1330,7 @@ static int run_uitest(void)
     wcscpy(g_simLog, tmpLog);
     {
         Task t;
-        t.isCountdown = 1; t.hour = 0; t.minute = 0; t.action = PA_SHUTDOWN;   /* 触发点=过去时刻，立即到期 */
+        t.isCountdown = 1; t.hour = 0; t.minute = 0; t.action = PA_SHUTDOWN;
         SYSTEMTIME past;
         GetLocalTime(&past);
         st_add_seconds(&past, -2, &past);
@@ -1333,7 +1339,6 @@ static int run_uitest(void)
         GetLocalTime(&now2);
         int fired = engine_tick(&g_eng, &now2);
         check("ui.firePath", fired == 1);
-        /* 日志应已由隐藏窗口的 WM_TIMER 或直接路径写入：直接补一次模拟写并校验文件 */
         simulate_log(PA_SHUTDOWN, L"定时到达(UI测试)");
         check("ui.simLog", GetFileAttributesW(tmpLog) != INVALID_FILE_ATTRIBUTES);
     }
@@ -1371,12 +1376,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     g_minute = g_cfg.minute < 0 ? 0 : (g_cfg.minute > 59 ? 59 : g_cfg.minute);
     g_mode = g_cfg.mode;
     if (g_mode == 0 && g_hour > 23) g_hour = 23;
-    sync_text_from_slider(1);
-    sync_text_from_slider(2);
 
     register_classes();
-    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT wr = mkrect(0, 0, 430, 600);
+    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+    RECT wr = mkrect(0, 0, 430, 560);
     AdjustWindowRect(&wr, style, FALSE);
     int ww = wr.right - wr.left, wh = wr.bottom - wr.top;
     int px = (GetSystemMetrics(SM_CXSCREEN) - ww) / 2;
